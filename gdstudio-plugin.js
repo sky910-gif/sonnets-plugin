@@ -167,11 +167,71 @@ function getUserSource() {
   }
 }
 
+/* ---------------- 歌词翻译合并 ---------------- */
+
+/// 解析 LRC 里的时间标签
+function lrcTimesLine(line) {
+  const times = [];
+  const re = /\[(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;
+  let m;
+  while ((m = re.exec(line))) {
+    const min = parseInt(m[1], 10);
+    const sec = parseInt(m[2], 10);
+    let frac = 0;
+    if (m[3]) {
+      // 毫秒/厘秒/百分之一，统一转秒的小数
+      const digits = m[3].length;
+      frac = parseInt(m[3], 10) / Math.pow(10, digits);
+    }
+    times.push(min * 60 + sec + frac);
+  }
+  return times;
+}
+
+/// 把翻译 LRC 按时间标签合并进原文 LRC：
+/// 同一行时间下，翻译作为新的一行追加在原文后面。
+function mergeLyricTranslation(rawLrc, translation) {
+  if (!rawLrc || !translation) return rawLrc;
+
+  // 收集翻译行：{ time: [标签秒] , text }
+  const transLines = [];
+  translation.split(/\r?\n/).forEach((ln) => {
+    const text = ln.replace(/\[\d{1,2}:\d{1,2}(?:[.:]\d{1,3})?\]/g, "").trim();
+    const times = lrcTimesLine(ln);
+    if (text && times.length) {
+      transLines.push({ time: times[0], text });
+    }
+  });
+  if (!transLines.length) return rawLrc;
+
+  // 处理原文每一行：若该行时间有匹配翻译，则在该行后追加翻译行
+  const outLines = [];
+  rawLrc.split(/\r?\n/).forEach((ln) => {
+    outLines.push(ln);
+    const times = lrcTimesLine(ln);
+    if (!times.length) return; // 元信息行，不拼
+    const text = ln.replace(/\[\d{1,2}:\d{1,2}(?:[.:]\d{1,3})?\]/g, "").trim();
+    if (!text) return; // 空行
+    // 找与该行第一个时间“接近”的翻译（容差 0.15 秒）
+    const target = times[0];
+    const match = transLines.find(
+      (tl) => Math.abs(tl.time - target) <= 0.15
+    );
+    if (match) {
+      // 保留原时间标签，追加翻译文本为单独一行
+      const tag = ln.match(/\[.*?\]/)[0];
+      outLines.push(tag + match.text);
+    }
+  });
+
+  return outLines.join("\n");
+}
+
 /* ---------------- 插件定义 ---------------- */
 
 const plugin = {
   platform: "gdstudio",
-  version: "1.1.0",
+  version: "1.2.0",
   author: "GD Studio bridge",
   description:
     "GD音乐台音源（网易云/JOOX/B站等），数据来自 music.gdstudio.xyz。仅用于学习。",
@@ -282,9 +342,16 @@ const plugin = {
       return null;
     }
 
+    const raw = result.lyric || "";
+    const translation = result.tlyric || "";
+    // 双保险：
+    // 1) 单独返回 translation 字段，供识别它的宿主逐行展示；
+    // 2) 把翻译按时间标签合并进 rawLrc，供不识别 translation 的宿主兜底。
+    const merged = mergeLyricTranslation(raw, translation);
+
     return {
-      rawLrc: result.lyric || "",
-      translation: result.tlyric || "",
+      rawLrc: merged, // 原文 + 翻译（同时间多行）
+      translation: translation, // 仍保留纯翻译，兼容能识别它的宿主
     };
   },
 
