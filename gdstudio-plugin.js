@@ -77,6 +77,80 @@ function toMusicItem(raw) {
   };
 }
 
+/* ---------------- 歌单链接解析 ---------------- */
+
+/// 从各音源分享链接中识别 { source, sheetId }
+function parseSheetURL(urlLike) {
+  let text = String(urlLike || "").trim();
+
+  // 1) 纯数字：默认按用户当前音源
+  if (/^\d+$/.test(text)) {
+    return { source: getUserSource(), sheetId: text };
+  }
+
+  // 2) 网易云 music.163.com
+  //    链接形式：/playlist?id=xxx 或 /playlist/xxx
+  let m =
+    text.match(/music\.163\.com[^\s]*[?&]id=(\d+)/) ||
+    text.match(/music\.163\.com\/playlist\/(\d+)/) ||
+    text.match(/163\.com[^\s]*id=(\d+)/);
+  if (m) return { source: "netease", sheetId: m[1] };
+
+  // 3) QQ音乐 y.qq.com
+  //    /playlist/xxx/ 或 id=xxx
+  m =
+    text.match(/y\.qq\.com\/.*?id=(\w+)/) ||
+    text.match(/y\.qq\.com\/n\/rycloud\/playlist\/detail\/(\w+)/) ||
+    text.match(/y\.qq\.com\/.*\/(\w+)\.html/);
+  if (m) return { source: "tencent", sheetId: m[1] };
+
+  // 4) 酷我 kuwo.cn
+  //    /playlist/detail/xxx 或 pid=xxx
+  m =
+    text.match(/kuwo\.cn[^\s]*[?&]pid=(\d+)/) ||
+    text.match(/kuwo\.cn\/playlist\/detail\/(\d+)/);
+  if (m) return { source: "kuwo", sheetId: m[1] };
+
+  // 5) URL 里带常见参数 id/pid
+  try {
+    const u = new URL(text);
+    const id = u.searchParams.get("id") || u.searchParams.get("pid");
+    if (id) {
+      const host = u.hostname;
+      let source = getUserSource();
+      if (host.includes("163")) source = "netease";
+      else if (host.includes("qq.com") || host.includes("y.qq")) source = "tencent";
+      else if (host.includes("kuwo")) source = "kuwo";
+      return { source, sheetId: id };
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+/// 把“歌单接口返回的网易云原始曲目”转成插件音乐项
+/// 网易云字段：id, name, ar[歌手], al{name,pic,picUrl}, dt(毫秒)
+function toMusicItemFromPlaylist(raw, source) {
+  const artists = Array.isArray(raw.ar)
+    ? raw.ar.map((a) => a && a.name).filter(Boolean)
+    : [];
+  const album = raw.al || {};
+  const picId = album.pic_str || String(album.pic || raw.al && raw.al.pic || "");
+
+  return {
+    id: String(raw.id),
+    platform: "gdstudio",
+    title: raw.name || "未知曲目",
+    artist: artists.join(" / "),
+    album: album.name || "",
+    duration: raw.dt ? raw.dt / 1000 : 0,
+    artwork: album.picUrl || "", // 歌单内已带封面，直接用
+    _src: source,
+    _picId: picId,
+    _lyricId: String(raw.id),
+  };
+}
+
 /* ---------------- 用户变量 ---------------- */
 
 // 宿主（Sonnets/MusicFree）把用户变量放在 process.env.userVariables
@@ -97,7 +171,7 @@ function getUserSource() {
 
 const plugin = {
   platform: "gdstudio",
-  version: "1.0.0",
+  version: "1.1.0",
   author: "GD Studio bridge",
   description:
     "GD音乐台音源（网易云/JOOX/B站等），数据来自 music.gdstudio.xyz。仅用于学习。",
@@ -212,6 +286,33 @@ const plugin = {
       rawLrc: result.lyric || "",
       translation: result.tlyric || "",
     };
+  },
+
+  /* ---- 导入歌单（贴歌单链接，返回曲目数组） ---- */
+  async importMusicSheet(urlLike) {
+    const parsed = parseSheetURL(urlLike);
+    if (!parsed) {
+      throw new Error(
+        "无法识别歌单链接，请粘贴包含歌单 ID 的链接（网易云/QQ/酷我）"
+      );
+    }
+
+    const result = await httpGet({
+      types: "playlist",
+      source: parsed.source,
+      id: parsed.sheetId,
+    });
+
+    const tracks =
+      result && result.playlist && Array.isArray(result.playlist.tracks)
+        ? result.playlist.tracks
+        : [];
+
+    if (!tracks.length) {
+      throw new Error("歌单为空或无法获取（该音源可能暂不支持）");
+    }
+
+    return tracks.map((t) => toMusicItemFromPlaylist(t, parsed.source));
   },
 };
 
