@@ -16,7 +16,9 @@ const DEFAULT_SOURCE = "netease";
 
 /* ---------------- HTTP ---------------- */
 
-// Sonnets/MusicFree 的 JavaScriptCore 环境内置 axios；直接使用全局 axios。
+// 宿主（Sonnets/MusicFree）内置 axios，需通过 require 引入，不能直接用全局。
+const axios = require("axios");
+
 function httpGet(params) {
   const search = Object.keys(params)
     .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== "")
